@@ -1,112 +1,127 @@
-#include <WiFi.h>
-#include <WebServer.h>  // Biblioteca para el servidor web
+#include <Arduino.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 
-const char* ssid = "Nautilus";  // Nombre de tu red Wi-Fi
-const char* password = "20000Leguas";  // Contraseña de tu Wi-Fi
+// Define UUIDs for the BLE service and characteristic
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-WebServer server(80);  // Inicializa el servidor web en el puerto 80
+// Create pointers for BLE objects
+BLEServer* pServer = NULL;
+BLECharacteristic* pCharacteristic = NULL;
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
 
-// Configuración opcional de IP estática (descomenta si tienes problemas de conexión)
-// IPAddress local_IP(192, 168, 1, 200); // Dirección IP fija
-// IPAddress gateway(192, 168, 1, 1);    // Puerta de enlace
-// IPAddress subnet(255, 255, 255, 0);   // Máscara de subred
+// Variables for sensor data (example)
+float temperature = 0;
+unsigned long previousMillis = 0;
+const long interval = 2000;  // Update interval in milliseconds
 
-// Página HTML con animación de colores
-String HTML = "<!DOCTYPE html>\
-<html lang=\"es\">\
-<head>\
-  <meta charset=\"UTF-8\">\
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\
-  <title>Animación de Colores</title>\
-  <style>\
-    body {\
-      font-family: Arial, sans-serif;\
-      margin: 0;\
-      padding: 0;\
-      height: 100vh;\
-      display: flex;\
-      justify-content: center;\
-      align-items: center;\
-      text-align: center;\
-      animation: colorChange 5s infinite;\
-    }\
-    h1 {\
-      font-size: 3em;\
-      color: #fff;\
-      animation: textAnimation 3s ease-in-out infinite;\
-    }\
-    p {\
-      font-size: 1.5em;\
-      color: #fff;\
-      animation: textFade 3s ease-in-out infinite;\
-    }\
-    @keyframes colorChange {\
-      0% { background-color: #ff6347; }\
-      25% { background-color: #4682b4; }\
-      50% { background-color: #32cd32; }\
-      75% { background-color: #ffd700; }\
-      100% { background-color: #ff6347; }\
-    }\
-    @keyframes textAnimation {\
-      0% { transform: translateY(-30px); opacity: 0; }\
-      50% { transform: translateY(0); opacity: 1; }\
-      100% { transform: translateY(30px); opacity: 0; }\
-    }\
-    @keyframes textFade {\
-      0% { opacity: 0; }\
-      50% { opacity: 1; }\
-      100% { opacity: 0; }\
-    }\
-  </style>\
-</head>\
-<body>\
-  <div>\
-    <h1>¡Bienvenido a mi página!</h1>\
-    <p>Este es un ejemplo de animación con cambios de color y textos en movimiento.</p>\
-    <p>¡ESP32 está en acción!</p>\
-  </div>\
-</body>\
-</html>";
+// Callback class for handling server events
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      deviceConnected = true;
+      Serial.println("Device connected");
+    }
 
-// Función que maneja la ruta raíz (/)
-void handle_root() {
-  server.send(200, "text/html", HTML);
-}
+    void onDisconnect(BLEServer* pServer) {
+      deviceConnected = false;
+      Serial.println("Device disconnected");
+    }
+};
+
+// Callback for handling characteristic events
+class CharacteristicCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      std::string value = pCharacteristic->getValue();
+      
+      if (value.length() > 0) {
+        Serial.println("Received data: ");
+        for (int i = 0; i < value.length(); i++) {
+          Serial.print(value[i]);
+        }
+        Serial.println();
+      }
+    }
+};
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Intentando conectar con WiFi...");
+  Serial.println("Starting BLE application");
+
+  // Initialize BLE device
+  BLEDevice::init("ESP32-S3 Lulu _Alicia");
   
-  WiFi.disconnect();  // Desconectar para evitar conflictos
-  delay(100);
+  // Create the BLE Server
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  // Create the BLE Service
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  // Create a BLE Characteristic
+  pCharacteristic = pService->createCharacteristic(
+                      CHARACTERISTIC_UUID,
+                      BLECharacteristic::PROPERTY_READ   |
+                      BLECharacteristic::PROPERTY_WRITE  |
+                      BLECharacteristic::PROPERTY_NOTIFY |
+                      BLECharacteristic::PROPERTY_INDICATE
+                    );
+
+  // Add the descriptor for notifications
+  pCharacteristic->addDescriptor(new BLE2902());
   
-  // Configurar IP manual si es necesario (descomentar la línea en la parte superior)
-  // WiFi.config(local_IP, gateway, subnet);
+  // Set callback to handle write events
+  pCharacteristic->setCallbacks(new CharacteristicCallbacks());
 
-  WiFi.begin(ssid, password);  // Conectar a la red Wi-Fi
-  int intentos = 0;
+  // Start the service
+  pService->start();
 
-  while (WiFi.status() != WL_CONNECTED && intentos < 20) { // Máximo 20 intentos (~20 segundos)
-    delay(1000);
-    Serial.print(".");
-    intentos++;
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi conectado");
-    Serial.print("IP del ESP32: ");
-    Serial.println(WiFi.localIP());
-
-    server.on("/", handle_root);  // Configura la ruta principal
-    server.begin();  // Inicia el servidor web
-
-    Serial.println("Servidor HTTP iniciado");
-  } else {
-    Serial.println("\nNo se pudo conectar a WiFi. Reiniciando...");
-    ESP.restart();  // Reinicia el ESP32 si no logra conectarse
-  }
+  // Start advertising
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);  // helps with iPhone connections issue
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+  
+  Serial.println("BLE service started. Waiting for a client connection...");
 }
 
 void loop() {
-  server.handleClient();  // Maneja las solicitudes de los clientes
+  unsigned long currentMillis = millis();
+  
+  // Simulate sensor reading and update value periodically
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+    
+    // Simulate temperature change
+    temperature = random(2000, 3000) / 100.0;
+    
+    // If a device is connected, update the characteristic value
+    if (deviceConnected) {
+      String tempStr = String(temperature, 2);
+      pCharacteristic->setValue(tempStr.c_str());
+      pCharacteristic->notify();
+      Serial.print("Temperature: ");
+      Serial.println(tempStr);
+    }
+  }
+
+  // Handle connection events
+  if (!deviceConnected && oldDeviceConnected) {
+    delay(500); // Give the Bluetooth stack time to get ready
+    pServer->startAdvertising(); // Restart advertising
+    Serial.println("Started advertising again");
+    oldDeviceConnected = deviceConnected;
+  }
+  
+  // If we've connected to a device
+  if (deviceConnected && !oldDeviceConnected) {
+    oldDeviceConnected = deviceConnected;
+  }
+  
+  delay(10); // Small delay for stability
 }
